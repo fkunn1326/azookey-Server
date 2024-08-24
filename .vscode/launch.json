@@ -1,0 +1,52 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "sourceLanguages": [
+                "swift"
+            ],
+            "args": [],
+            "cwd": "${workspaceFolder:azookey-client}",
+            "name": "Debug azookey-client",
+            "program": "${workspaceFolder:azookey-client}\\.build\\debug\\azookey-client.exe",
+            "preLaunchTask": "swift: Build Debug azookey-client"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "sourceLanguages": [
+                "swift"
+            ],
+            "args": [],
+            "cwd": "${workspaceFolder:azookey-client}",
+            "name": "Release azookey-client",
+            "program": "${workspaceFolder:azookey-client}\\.build\\release\\azookey-client.exe",
+            "preLaunchTask": "swift: Build Release azookey-client"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "sourceLanguages": [
+                "swift"
+            ],
+            "args": [],
+            "cwd": "${workspaceFolder:azookey-service}",
+            "name": "Debug azookey-service",
+            "program": "${workspaceFolder:azookey-service}\\.build\\debug\\azookey-service.exe",
+            "preLaunchTask": "swift: Build Debug azookey-service"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "sourceLanguages": [
+                "swift"
+            ],
+            "args": [],
+            "cwd": "${workspaceFolder:azookey-service}",
+            "name": "Release azookey-service",
+            "program": "${workspaceFolder:azookey-service}\\.build\\release\\azookey-service.exe",
+            "preLaunchTask": "swift: Build Release azookey-service"
+        }
+    ]
+}
