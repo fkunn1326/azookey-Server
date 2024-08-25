@@ -11,7 +11,7 @@ func convertToWideString(_ string: String) -> [WCHAR] {
 // 変換器を初期化する
 let converter = KanaKanjiConverter()
 // 入力を初期化する
-var composing_text = ComposingText()
+var composingText = ComposingText()
 // 変換したい文章を追加する
 let options = ConvertRequestOptions.withDefaultDictionary(
     // 日本語予測変換
@@ -102,6 +102,7 @@ func send(_ received: String) {
 
 @MainActor
 func disconnectAndReconnect() {
+    composingText = ComposingText()
     DisconnectNamedPipe(pipeHandle)
     waitForConnection()
 }
@@ -118,7 +119,30 @@ while true {
         continue
     }
 
-    composing_text.insertAtCursorPosition(receivedMessage, inputStyle: .roman2kana)
-    let results = converter.requestCandidates(composing_text, options: options)
-    send(results.mainResults.first!.text)
+    composingText.insertAtCursorPosition(receivedMessage, inputStyle: .roman2kana)
+
+    var hiragana = composingText.convertTarget
+    let converted = converter.requestCandidates(composingText, options: options)
+    let candidate = converted.mainResults.first!
+
+    let candidateCount = candidate.data.reduce(0) { $0 + $1.ruby.count }
+    var hiraganaCount = hiragana.count
+
+    var returnString = ""
+
+    if candidateCount > hiraganaCount {
+        for data in candidate.data {
+            // hiraganaの先頭data.ruby.count文字を削除
+            if hiragana.count < data.ruby.count {
+                returnString += hiragana
+                break
+            }
+            hiragana.removeFirst(data.ruby.count)
+            returnString += data.word
+        }
+    } else {
+        returnString = candidate.text
+    }
+
+    send(returnString)
 }
