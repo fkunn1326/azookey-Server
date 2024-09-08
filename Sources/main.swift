@@ -1,148 +1,245 @@
-// デフォルト辞書つきの変換モジュールをインポート
 import KanaKanjiConverterModuleWithDefaultDictionary
 import Foundation
 import WinSDK
+
+let PIPE_NAME = "\\\\.\\pipe\\azookey_service"
+let BUFFER_SIZE: DWORD = 1024
 
 func convertToWideString(_ string: String) -> [WCHAR] {
     return string.utf16.map { WCHAR($0) } + [0]
 }
 
+// 名前付きパイプようのクラス
 
-// 変換器を初期化する
-let converter = KanaKanjiConverter()
-// 入力を初期化する
-var composingText = ComposingText()
-// 変換したい文章を追加する
-let options = ConvertRequestOptions.withDefaultDictionary(
-    // 日本語予測変換
-    requireJapanesePrediction: true,
-    // 英語予測変換 
-    requireEnglishPrediction: false,
-    // 入力言語 
-    keyboardLanguage: .ja_JP,
-    // 学習タイプ 
-    learningType: .nothing, 
-    // 学習データを保存するディレクトリのURL（書類フォルダを指定）
-    memoryDirectoryURL: URL.init(filePath: "./test"),
-    // ユーザ辞書データのあるディレクトリのURL（書類フォルダを指定）
-    sharedContainerURL: URL.init(filePath: "./test"),
-
-    // zenzai
-    // zenzaiMode: .on(
-    //     weight: URL.init(filePath: "./zenz-v2-Q5_K_M.gguf"),
-    //     inferenceLimit: 1,
-    //     requestRichCandidates: true,
-    //     versionDependentMode: .v2(
-    //         .init(
-    //             profile: "鈴木花子",
-    //             leftSideContext: ""
-    //         )
-    //     )
-    // ),
-    // メタデータ
-    metadata: .init(versionString: "You App Version X")
-)
-
-let pipeName = "\\\\.\\pipe\\azookey_service"
-var pipeNameWide = convertToWideString(pipeName)
-
-let pipeHandle = CreateNamedPipeW(
-    &pipeNameWide,
-    DWORD(PIPE_ACCESS_DUPLEX),
-    DWORD(PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT),
-    UINT32(PIPE_UNLIMITED_INSTANCES),
-    1024,
-    1024,
-    0,
-    nil
-)
-
-@MainActor
-func waitForConnection() {
-    print("Waiting for client connection...")
-    let connected = ConnectNamedPipe(pipeHandle, nil)
-    if !connected {
-        let error = GetLastError()
-        if error != ERROR_PIPE_CONNECTED {
-            print("ConnectNamedPipe failed. Error: \(error)")
+class PipeHandler {
+    private let pipeHandle: HANDLE
+    
+    @MainActor
+    init() {
+        var pipeNameWide = convertToWideString(PIPE_NAME)
+        pipeHandle = CreateNamedPipeW(
+            &pipeNameWide,
+            DWORD(PIPE_ACCESS_DUPLEX),
+            DWORD(PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT),
+            1,
+            BUFFER_SIZE,
+            BUFFER_SIZE,
+            0,
+            nil
+        )
+        
+        if pipeHandle == INVALID_HANDLE_VALUE {
+            fatalError("Failed to create named pipe. Error: \(GetLastError())")
+        }
+    }
+    
+    func waitForConnection() {
+        print("Waiting for client connection...")
+        let connected = ConnectNamedPipe(pipeHandle, nil)
+        if !connected {
+            let error = GetLastError()
+            if error != ERROR_PIPE_CONNECTED {
+                print("ConnectNamedPipe failed. Error: \(error)")
+                return
+            }
+        }
+        print("Client connected. Starting communication...")
+    }
+    
+    func receive() -> String {
+        var buffer = [UInt8](repeating: 0, count: Int(BUFFER_SIZE))
+        var bytesRead: DWORD = 0
+        let success = ReadFile(
+            pipeHandle,
+            &buffer,
+            BUFFER_SIZE,
+            &bytesRead,
+            nil
+        )
+        
+        if !success {
+            print("Failed to read from pipe. Error: \(GetLastError())")
+            return ""
+        }
+        
+        return String(decoding: buffer.prefix(Int(bytesRead)), as: UTF8.self)
+    }
+    
+    func send(_ message: String) {
+        var bytesWritten: DWORD = 0
+        let success = WriteFile(
+            pipeHandle,
+            message,
+            DWORD(message.utf8.count),
+            &bytesWritten,
+            nil
+        )
+        
+        if !success {
+            print("Failed to write to pipe. Error: \(GetLastError())")
             return
         }
+        
+        FlushFileBuffers(pipeHandle)
+        // print("Sent: \(message)")
     }
-    print("Client connected. Starting communication...")
+    
+    func disconnect() {
+        DisconnectNamedPipe(pipeHandle)
+    }
 }
 
-@MainActor
-func receive() -> String {
-    var buffer = [UInt8](repeating: 0, count: 1024)
-    var bytesRead: DWORD = 0
-    let _ = ReadFile(
-        pipeHandle,
-        &buffer,
-        DWORD(buffer.count),
-        &bytesRead,
-        nil
-    )
-    return String(decoding: buffer.prefix(Int(bytesRead)), as: UTF8.self)
-}
+// 変換クラス
 
-@MainActor
-func send(_ received: String) {
-    let message = received
-    var bytesWritten: DWORD = 0
-    let _ = WriteFile(
-        pipeHandle,
-        message,
-        DWORD(message.utf8.count),
-        &bytesWritten,
-        nil
-    )
-    FlushFileBuffers(pipeHandle)
-    print("Sent: \(message)")
-}
-
-@MainActor
-func disconnectAndReconnect() {
-    composingText = ComposingText()
-    DisconnectNamedPipe(pipeHandle)
-    waitForConnection()
-}
-
-// Initial connection
-waitForConnection()
-
-// Communication loop
-while true {
-    let receivedMessage = receive()
-    if receivedMessage.isEmpty {
-        print("Client disconnected or error occurred.")
-        disconnectAndReconnect()
-        continue
+class ConversionHandler {
+    private let converter: KanaKanjiConverter
+    private let options: ConvertRequestOptions
+    private var composingText: ComposingText
+    
+    @MainActor
+    init() {
+        converter = KanaKanjiConverter()
+        options = ConversionHandler.createConvertRequestOptions()
+        composingText = ComposingText()
+    }
+    
+    private static func createConvertRequestOptions() -> ConvertRequestOptions {
+        return ConvertRequestOptions.withDefaultDictionary(
+            requireJapanesePrediction: true,
+            requireEnglishPrediction: false,
+            keyboardLanguage: .ja_JP,
+            learningType: .nothing,
+            memoryDirectoryURL: URL(filePath: "./test"),
+            sharedContainerURL: URL(filePath: "./test"),
+            metadata: .init(versionString: "Your App Version X")
+        )
+    }
+    
+    @MainActor
+    func insert(_ input: String) {
+        composingText.insertAtCursorPosition(input, inputStyle: .roman2kana)
     }
 
-    composingText.insertAtCursorPosition(receivedMessage, inputStyle: .roman2kana)
+    @MainActor
+    func delete() {
+        composingText.deleteBackwardFromCursorPosition(count: 1)
+    }
 
-    var hiragana = composingText.convertTarget
-    let converted = converter.requestCandidates(composingText, options: options)
-    let candidate = converted.mainResults.first!
+    @MainActor
+    func getConvertedList() -> [String] {
+        let hiragana = composingText.convertTarget
+        let converted = converter.requestCandidates(composingText, options: options)
+        var result: [String] = []
 
-    let candidateCount = candidate.data.reduce(0) { $0 + $1.ruby.count }
-    var hiraganaCount = hiragana.count
+        guard let candidate = converted.mainResults.first else {
+            return [hiragana]
+        }
 
-    var returnString = ""
+        let candidateCount = candidate.data.reduce(0) { $0 + $1.ruby.count }
+        let hiraganaCount = hiragana.count
+        
+        if candidateCount > hiraganaCount {
+            result.append(constructCandidateString(candidate: candidate, hiragana: hiragana))
+        } else {
+            result.append(candidate.text)
+        }
+        
+        // 2個目以降の候補を追加
+        for i in 1..<converted.mainResults.count {
+            let candidate = converted.mainResults[i]
+            result.append(candidate.text)
+        }
 
-    if candidateCount > hiraganaCount {
+        if result.count < 5 {
+            for _ in 0..<(5 - result.count) {
+                result.append("")
+            }
+        }
+
+        return result
+    }
+    
+    private func constructCandidateString(candidate: Candidate, hiragana: String) -> String {
+        var remainingHiragana = hiragana
+        var result = ""
+        
         for data in candidate.data {
-            // hiraganaの先頭data.ruby.count文字を削除
-            if hiragana.count < data.ruby.count {
-                returnString += hiragana
+            if remainingHiragana.count < data.ruby.count {
+                result += remainingHiragana
                 break
             }
-            hiragana.removeFirst(data.ruby.count)
-            returnString += data.word
+            remainingHiragana.removeFirst(data.ruby.count)
+            result += data.word
         }
-    } else {
-        returnString = candidate.text
+        
+        return result
     }
-
-    send(returnString)
+    
+    func resetComposingText() {
+        composingText = ComposingText()
+    }
 }
+
+// MARK: - KanaKanjiConverterService Class
+
+class KanaKanjiConverterService {
+    private let pipeHandler: PipeHandler
+    private let conversionHandler: ConversionHandler
+    
+    @MainActor
+    init() {
+        pipeHandler = PipeHandler()
+        conversionHandler = ConversionHandler()
+    }
+    
+    @MainActor
+    func start() {
+        pipeHandler.waitForConnection()
+        
+        while true {
+            let receivedMessage = pipeHandler.receive()
+            if receivedMessage.isEmpty {
+                print("Client disconnected or error occurred.")
+                handleDisconnection()
+                continue
+            }
+
+            // read json
+            let jsonData = receivedMessage.data(using: .utf8)!
+            let json = try! JSONSerialization.jsonObject(with: jsonData) as! [String: String]
+            let type = json["type"] as! String
+            let message = json["message"] as! String
+
+            if type == "key" {
+                let message = Int(message)!
+                let code = Int32(message)
+                switch code {
+                    case VK_BACK:
+                        conversionHandler.delete()
+                    case (0x30...0x5A):
+                        conversionHandler.insert(String(UnicodeScalar(Int(code))!).lowercased())
+                    case VK_OEM_MINUS:
+                        conversionHandler.insert("ー")
+                    default:
+                        break
+                }
+                
+                let convertedList = conversionHandler.getConvertedList()
+
+                pipeHandler.send(convertedList.joined(separator: ","))
+            } else if type == "debug" {
+                print(message)
+            }
+        }
+    }
+    
+    private func handleDisconnection() {
+        pipeHandler.disconnect()
+        conversionHandler.resetComposingText()
+        pipeHandler.waitForConnection()
+    }
+}
+
+// MARK: - Main Execution
+let service = KanaKanjiConverterService()
+service.start()
