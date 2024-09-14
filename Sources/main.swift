@@ -5,6 +5,8 @@ import WinSDK
 let PIPE_NAME = "\\\\.\\pipe\\azookey_service"
 let BUFFER_SIZE: DWORD = 1024
 
+var leftSideContext = ""
+
 func convertToWideString(_ string: String) -> [WCHAR] {
     return string.utf16.map { WCHAR($0) } + [0]
 }
@@ -93,17 +95,15 @@ class PipeHandler {
 
 class ConversionHandler {
     private let converter: KanaKanjiConverter
-    private let options: ConvertRequestOptions
     private var composingText: ComposingText
     
     @MainActor
     init() {
         converter = KanaKanjiConverter()
-        options = ConversionHandler.createConvertRequestOptions()
         composingText = ComposingText()
     }
     
-    private static func createConvertRequestOptions() -> ConvertRequestOptions {
+    private static func createConvertRequestOptions(leftSideContext: String) -> ConvertRequestOptions {
         return ConvertRequestOptions.withDefaultDictionary(
             requireJapanesePrediction: true,
             requireEnglishPrediction: false,
@@ -111,7 +111,19 @@ class ConversionHandler {
             learningType: .nothing,
             memoryDirectoryURL: URL(filePath: "./test"),
             sharedContainerURL: URL(filePath: "./test"),
-            metadata: .init(versionString: "Your App Version X")
+            // zenzai
+            zenzaiMode: .on(
+                weight: URL.init(filePath: "C:/Users/WDAGUtilityAccount/Desktop/Service/zenz-v2-Q5_K_M.gguf"),
+                inferenceLimit: 1,
+                requestRichCandidates: true,
+                versionDependentMode: .v2(
+                    .init(
+                        profile: "",
+                        leftSideContext: leftSideContext
+                    )
+                )
+            ),
+            metadata: .init(versionString: "Your App Version X"),
         )
     }
     
@@ -128,7 +140,7 @@ class ConversionHandler {
     @MainActor
     func getConvertedList() -> [String] {
         let hiragana = composingText.convertTarget
-        let converted = converter.requestCandidates(composingText, options: options)
+        let converted = converter.requestCandidates(composingText, options: ConversionHandler.createConvertRequestOptions(leftSideContext: leftSideContext))
         var result: [String] = []
 
         guard let candidate = converted.mainResults.first else {
@@ -220,6 +232,10 @@ class KanaKanjiConverterService {
                         conversionHandler.insert(String(UnicodeScalar(Int(code))!).lowercased())
                     case VK_OEM_MINUS:
                         conversionHandler.insert("ー")
+                    case VK_OEM_COMMA:
+                        conversionHandler.insert("、")
+                    case VK_OEM_PERIOD:
+                        conversionHandler.insert("。")
                     default:
                         break
                 }
@@ -229,6 +245,8 @@ class KanaKanjiConverterService {
                 pipeHandler.send(convertedList.joined(separator: ","))
             } else if type == "debug" {
                 print(message)
+            } else if type == "left" {
+                leftSideContext = message
             }
         }
     }
